@@ -87,7 +87,7 @@ module.exports = async function handler(req, res) {
     }
 
     // Batas aman biar tidak terlalu berat di Vercel
-    const uniqueIds = [...new Set(ids)].slice(0, 100);
+    const uniqueIds = [...new Set(ids)].slice(0, 1000);
 
     const finalZip = new JSZip();
     const readmeLines = [
