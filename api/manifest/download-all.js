@@ -38,7 +38,7 @@ async function fetchManifestMeta(appId) {
   };
 }
 
-async function fetchOriginalZip(appId) {
+async function fetchOriginalZipBuffer(appId) {
   const meta = await fetchManifestMeta(appId);
   if (!meta.ok) {
     return { ok: false, error: meta.error };
@@ -55,21 +55,18 @@ async function fetchOriginalZip(appId) {
     return { ok: false, error: 'Download Error' };
   }
 
-  let fileName = `${appId}.zip`;
-  const contentDisposition = response.headers.get('content-disposition') || '';
-  const match = contentDisposition.match(/filename="?([^"]+)"?/i);
-
-  if (match?.[1]) {
-    fileName = match[1];
-  }
-
   const arrayBuffer = await response.arrayBuffer();
 
   return {
     ok: true,
-    fileName,
     buffer: Buffer.from(arrayBuffer)
   };
+}
+
+function sanitizeFileName(name) {
+  return String(name || '')
+    .replace(/[\\/:*?"<>|]/g, '_')
+    .trim();
 }
 
 module.exports = async function handler(req, res) {
@@ -89,42 +86,84 @@ module.exports = async function handler(req, res) {
       return;
     }
 
+    // Batas aman biar tidak terlalu berat di Vercel
     const uniqueIds = [...new Set(ids)].slice(0, 10);
-    const zip = new JSZip();
+
+    const finalZip = new JSZip();
     const readmeLines = [
       'Manifest Bulk Download',
       '',
-      'This archive contains original ZIP files fetched from kernelos.org.',
+      'This archive contains extracted files from original manifest ZIP packages.',
       '',
-      'Included files:'
+      'Included entries:'
     ];
 
     let addedCount = 0;
+    let readmeAdded = false;
 
     for (const appId of uniqueIds) {
-      const result = await fetchOriginalZip(appId);
+      const downloaded = await fetchOriginalZipBuffer(appId);
 
-      if (!result.ok) {
-        readmeLines.push(`- ${appId}: FAILED (${result.error})`);
+      if (!downloaded.ok) {
+        readmeLines.push(`- ${appId}: FAILED (${downloaded.error})`);
         continue;
       }
 
-      zip.file(result.fileName, result.buffer);
-      readmeLines.push(`- ${appId}: ${result.fileName}`);
-      addedCount++;
+      let sourceZip;
+      try {
+        sourceZip = await JSZip.loadAsync(downloaded.buffer);
+      } catch {
+        readmeLines.push(`- ${appId}: FAILED (Invalid ZIP)`);
+        continue;
+      }
+
+      const entries = Object.values(sourceZip.files);
+      let foundLua = false;
+
+      for (const entry of entries) {
+        if (entry.dir) continue;
+
+        const originalName = entry.name.split('/').pop();
+        const lowerName = originalName.toLowerCase();
+
+        // ambil semua .lua
+        if (lowerName.endsWith('.lua')) {
+          const luaBuffer = await entry.async('nodebuffer');
+          const finalName = sanitizeFileName(originalName || `${appId}.lua`);
+          finalZip.file(finalName, luaBuffer);
+          foundLua = true;
+          addedCount++;
+        }
+
+        // ambil README satu kali saja
+        if (!readmeAdded && lowerName === 'readme.txt') {
+          const readmeBuffer = await entry.async('nodebuffer');
+          finalZip.file('README.txt', readmeBuffer);
+          readmeAdded = true;
+        }
+      }
+
+      if (foundLua) {
+        readmeLines.push(`- ${appId}: OK`);
+      } else {
+        readmeLines.push(`- ${appId}: FAILED (No LUA found)`);
+      }
     }
 
     if (addedCount === 0) {
-      res.status(404).send('No valid manifests found');
+      res.status(404).send('No LUA files found');
       return;
     }
 
-    zip.file('README.txt', readmeLines.join('\n'));
+    // kalau zip asli tidak punya readme sama sekali, bikin fallback
+    if (!readmeAdded) {
+      finalZip.file('README.txt', readmeLines.join('\n'));
+    }
 
-    const buffer = await zip.generateAsync({ type: 'nodebuffer' });
+    const buffer = await finalZip.generateAsync({ type: 'nodebuffer' });
 
     res.setHeader('Content-Type', 'application/zip');
-    res.setHeader('Content-Disposition', 'attachment; filename="steam_manifests_bundle.zip"');
+    res.setHeader('Content-Disposition', 'attachment; filename="steam_manifests_flat.zip"');
     res.status(200).send(buffer);
   } catch (error) {
     res.status(500).send(error.message || 'Internal server error');
