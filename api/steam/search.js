@@ -1,7 +1,7 @@
 let cachedApps = null;
 let cachedAt = 0;
 
-const CACHE_TTL_MS = 1000 * 60 * 60 * 6; // 6 jam
+const CACHE_TTL_MS = 1000 * 60 * 60 * 6;
 
 async function getAppList() {
   const now = Date.now();
@@ -27,27 +27,30 @@ async function getAppList() {
   cachedApps = apps
     .filter(app => app && app.appid && app.name && String(app.name).trim())
     .map(app => ({
-      appid: String(app.appid),
-      name: String(app.name)
+      appId: String(app.appid),
+      gameName: String(app.name)
     }));
 
   cachedAt = now;
   return cachedApps;
 }
 
-function scoreResult(name, query) {
+function scoreGameName(name, query) {
   const n = name.toLowerCase();
   const q = query.toLowerCase();
 
   if (n === q) return 1000;
-  if (n.startsWith(q)) return 800;
-  if (n.includes(q)) return 500;
+  if (n.startsWith(q)) return 900;
+  if (n.includes(q)) return 700;
 
-  const words = q.split(/\s+/).filter(Boolean);
+  const parts = q.split(/\s+/).filter(Boolean);
   let score = 0;
-  for (const word of words) {
-    if (n.includes(word)) score += 100;
+
+  for (const part of parts) {
+    if (n.startsWith(part)) score += 120;
+    else if (n.includes(part)) score += 80;
   }
+
   return score;
 }
 
@@ -60,7 +63,7 @@ module.exports = async function handler(req, res) {
   try {
     const q = String(req.query.q || '').trim();
 
-    if (!q || q.length < 2) {
+    if (q.length < 2) {
       res.status(200).json({ results: [] });
       return;
     }
@@ -70,17 +73,17 @@ module.exports = async function handler(req, res) {
     const results = apps
       .map(app => ({
         ...app,
-        score: scoreResult(app.name, q)
+        score: scoreGameName(app.gameName, q)
       }))
       .filter(app => app.score > 0)
       .sort((a, b) => {
         if (b.score !== a.score) return b.score - a.score;
-        return a.name.length - b.name.length;
+        return a.gameName.length - b.gameName.length;
       })
-      .slice(0, 10)
+      .slice(0, 12)
       .map(app => ({
-        appId: app.appid,
-        gameName: app.name
+        appId: app.appId,
+        gameName: app.gameName
       }));
 
     res.status(200).json({ results });
