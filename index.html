@@ -27,13 +27,16 @@
     * { box-sizing: border-box; }
 
     .app-shell {
-      height: 100%;
+      min-height: 100%;
       width: 100%;
       overflow-y: auto;
       overflow-x: hidden;
     }
 
-    textarea:focus { outline: none; }
+    textarea:focus,
+    input:focus {
+      outline: none;
+    }
 
     .fade-in {
       animation: fadeIn 0.35s ease forwards;
@@ -79,6 +82,10 @@
     ::-webkit-scrollbar-track { background: transparent; }
     ::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 3px; }
     ::-webkit-scrollbar-thumb:hover { background: #9ca3af; }
+
+    .search-result-item:last-child {
+      border-bottom: none;
+    }
   </style>
 </head>
 <body class="h-full">
@@ -102,14 +109,36 @@
     <main class="max-w-3xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
       <div id="input-card" style="background:#ffffff;border:1px solid #e5e7eb;border-radius:10px;box-shadow:0 1px 3px rgba(0,0,0,0.04);">
         <div class="p-4 sm:p-6">
+          <!-- Search -->
+          <div class="mb-5 relative">
+            <label for="game-search-input" class="block text-sm font-semibold mb-2" style="color:#374151;">
+              Search Game
+            </label>
+            <input
+              id="game-search-input"
+              type="text"
+              autocomplete="off"
+              class="w-full text-sm p-3 rounded-lg"
+              style="border:1px solid #d1d5db;background:#fafbfc;color:#111827;transition:border-color 0.2s;"
+              placeholder="Search by game title..."
+            >
+            <div
+              id="search-results"
+              class="hidden absolute left-0 right-0 mt-2 z-20 rounded-lg overflow-hidden"
+              style="background:#ffffff;border:1px solid #e5e7eb;box-shadow:0 8px 24px rgba(0,0,0,0.08);"
+            ></div>
+            <p class="text-xs mt-1.5" style="color:#9ca3af;">
+              Search a Steam game, then click a result to add its App ID
+            </p>
+          </div>
+
+          <!-- App IDs -->
           <label for="appid-input" class="block text-sm font-semibold mb-2" style="color:#374151;">App IDs</label>
           <textarea
             id="appid-input"
             rows="4"
             class="w-full font-mono text-sm p-3 rounded-lg resize-y"
             style="border:1px solid #d1d5db;background:#fafbfc;color:#111827;transition:border-color 0.2s;"
-            onfocus="this.style.borderColor='#3b3f8f'"
-            onblur="this.style.borderColor='#d1d5db'"
             placeholder="730 440 570 1245620"
           ></textarea>
 
@@ -125,8 +154,6 @@
               onclick="handleGenerate()"
               class="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-semibold text-white transition-all duration-200"
               style="background:#3b3f8f;"
-              onmouseover="if(!this.disabled)this.style.background='#32367a'"
-              onmouseout="if(!this.disabled)this.style.background='#3b3f8f'"
             >
               <i data-lucide="zap" style="width:15px;height:15px;"></i>
               <span id="generate-btn-text">Generate Manifest</span>
@@ -136,8 +163,6 @@
               onclick="handleClear()"
               class="inline-flex items-center gap-1.5 px-4 py-2.5 rounded-lg text-sm font-medium transition-colors duration-200"
               style="color:#6b7280;background:transparent;border:1px solid #e5e7eb;"
-              onmouseover="this.style.background='#f3f4f6'"
-              onmouseout="this.style.background='transparent'"
             >
               <i data-lucide="x" style="width:14px;height:14px;"></i>
               Clear
@@ -187,8 +212,6 @@
               onclick="downloadAllManifests()"
               class="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold text-white transition-all duration-200"
               style="background:#16a34a;"
-              onmouseover="this.style.background='#15803d'"
-              onmouseout="this.style.background='#16a34a'"
             >
               <i data-lucide="download" style="width:15px;height:15px;"></i>
               Download All
@@ -208,7 +231,7 @@
 
         <div class="mt-4 px-1">
           <p class="text-xs" style="color:#9ca3af;">
-            Manifest files are provided by the backend service. For larger batches, use bulk download when available.
+            Search for a game title, add one or more App IDs, then generate downloadable files.
           </p>
         </div>
       </div>
@@ -229,6 +252,16 @@
       font_family: 'DM Sans',
       font_size: 14
     };
+
+    const API_ENDPOINTS = {
+      generate: '/api/manifest/generate',
+      search: '/api/steam/search'
+    };
+
+    let isProcessing = false;
+    let currentResults = [];
+    let currentBulkDownloadUrl = null;
+    let searchDebounce = null;
 
     function applyConfig(config) {
       const c = { ...defaultConfig, ...config };
@@ -252,6 +285,9 @@
       if (inputCard) inputCard.style.background = c.surface_color;
       if (headerIcon) headerIcon.style.background = c.accent_color;
 
+      if (title) title.style.color = c.text_color;
+      if (subtitle) subtitle.style.color = c.muted_color;
+
       if (genBtn) {
         genBtn.style.background = c.accent_color;
         genBtn.onmouseover = function () {
@@ -262,29 +298,13 @@
         };
       }
 
-      if (title) title.style.color = c.text_color;
-      if (subtitle) subtitle.style.color = c.muted_color;
-
       const fontStack = `${c.font_family}, DM Sans, sans-serif`;
       if (root) root.style.fontFamily = fontStack;
-
-      const baseSize = c.font_size || 14;
-      if (title) title.style.fontSize = `${baseSize * 1.6}px`;
-      if (subtitle) subtitle.style.fontSize = `${baseSize * 0.92}px`;
-      if (helper) helper.style.fontSize = `${baseSize * 0.78}px`;
 
       document.querySelectorAll('.pulse-bar').forEach(el => {
         el.style.background = c.accent_color;
       });
     }
-
-    const API_ENDPOINTS = {
-      generate: '/api/manifest/generate'
-    };
-
-    let isProcessing = false;
-    let currentResults = [];
-    let currentBulkDownloadUrl = null;
 
     function escapeHtml(value) {
       return String(value ?? '')
@@ -364,16 +384,31 @@
       return {
         results: payload.results.map(normalizeResult),
         total: Number(payload.total ?? payload.results.length ?? 0),
-        successCount: Number(
-          payload.successCount ??
-          payload.results.filter(item => item.success).length
-        ),
-        failedCount: Number(
-          payload.failedCount ??
-          payload.results.filter(item => !item.success).length
-        ),
+        successCount: Number(payload.successCount ?? payload.results.filter(item => item.success).length),
+        failedCount: Number(payload.failedCount ?? payload.results.filter(item => !item.success).length),
         bulkDownloadUrl: payload.bulkDownloadUrl ? String(payload.bulkDownloadUrl) : null
       };
+    }
+
+    async function searchSteamGames(query) {
+      const response = await fetch(`${API_ENDPOINTS.search}?q=${encodeURIComponent(query)}`, {
+        method: 'GET',
+        headers: { 'Accept': 'application/json' }
+      });
+
+      let payload = null;
+
+      try {
+        payload = await response.json();
+      } catch (error) {
+        throw new Error('Invalid search response.');
+      }
+
+      if (!response.ok) {
+        throw new Error(payload?.message || 'Search failed');
+      }
+
+      return Array.isArray(payload.results) ? payload.results : [];
     }
 
     function triggerBrowserDownload(url) {
@@ -404,6 +439,83 @@
         return;
       }
       triggerBrowserDownload(currentBulkDownloadUrl);
+    }
+
+    function hideSearchResults() {
+      document.getElementById('search-results').classList.add('hidden');
+    }
+
+    function showSearchResults(results) {
+      const box = document.getElementById('search-results');
+
+      if (!results.length) {
+        box.innerHTML = `<div class="px-3 py-2 text-sm" style="color:#9ca3af;">No results found</div>`;
+        box.classList.remove('hidden');
+        return;
+      }
+
+      box.innerHTML = results.map(item => `
+        <button
+          type="button"
+          class="search-result-item w-full text-left px-3 py-3 border-b transition-colors"
+          style="border-color:#f3f4f6;background:#ffffff;"
+          data-appid="${escapeHtml(item.appId)}"
+          data-name="${escapeHtml(item.gameName)}"
+        >
+          <div class="text-sm font-medium" style="color:#111827;">${escapeHtml(item.gameName)}</div>
+          <div class="text-xs mt-1" style="color:#6b7280;">App ID: ${escapeHtml(item.appId)}</div>
+        </button>
+      `).join('');
+
+      box.classList.remove('hidden');
+
+      box.querySelectorAll('button[data-appid]').forEach(button => {
+        button.addEventListener('mouseenter', () => {
+          button.style.background = '#f9fafb';
+        });
+
+        button.addEventListener('mouseleave', () => {
+          button.style.background = '#ffffff';
+        });
+
+        button.addEventListener('click', () => {
+          selectSearchResult(button.dataset.appid, button.dataset.name);
+        });
+      });
+    }
+
+    function selectSearchResult(appId, gameName) {
+      const textarea = document.getElementById('appid-input');
+      const current = textarea.value.trim();
+
+      const ids = current
+        ? current.split(/[\s,;]+/).map(v => v.trim()).filter(Boolean)
+        : [];
+
+      if (!ids.includes(appId)) {
+        ids.push(appId);
+      }
+
+      textarea.value = ids.join('\n');
+      document.getElementById('game-search-input').value = gameName;
+      hideSearchResults();
+    }
+
+    async function handleGameSearchInput() {
+      const input = document.getElementById('game-search-input');
+      const query = input.value.trim();
+
+      if (query.length < 2) {
+        hideSearchResults();
+        return;
+      }
+
+      try {
+        const results = await searchSteamGames(query);
+        showSearchResults(results);
+      } catch (error) {
+        showSearchResults([]);
+      }
     }
 
     function renderResults(payload) {
@@ -460,11 +572,10 @@
                   r.downloadUrl
                     ? `
                       <button
-                        onclick="downloadManifestByAppId('${escapeHtml(r.appId)}')"
-                        class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors duration-150"
+                        type="button"
+                        class="download-row-btn inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors duration-150"
+                        data-appid="${escapeHtml(r.appId)}"
                         style="color:${accent};background:transparent;border:1px solid ${accent}20;"
-                        onmouseover="this.style.background='${accent}10'"
-                        onmouseout="this.style.background='transparent'"
                       >
                         <i data-lucide="download" style="width:13px;height:13px;"></i>
                         Download
@@ -502,6 +613,20 @@
 
       section.classList.remove('hidden');
       lucide.createIcons();
+
+      body.querySelectorAll('.download-row-btn').forEach(button => {
+        button.addEventListener('mouseenter', () => {
+          button.style.background = `${accent}10`;
+        });
+
+        button.addEventListener('mouseleave', () => {
+          button.style.background = 'transparent';
+        });
+
+        button.addEventListener('click', () => {
+          downloadManifestByAppId(button.dataset.appid);
+        });
+      });
     }
 
     async function handleGenerate() {
@@ -546,18 +671,72 @@
     }
 
     function handleClear() {
+      document.getElementById('game-search-input').value = '';
       document.getElementById('appid-input').value = '';
       document.getElementById('results-section').classList.add('hidden');
       document.getElementById('results-body').innerHTML = '';
       currentResults = [];
       currentBulkDownloadUrl = null;
       hideValidation();
+      hideSearchResults();
       setLoading(false);
     }
 
     document.addEventListener('DOMContentLoaded', () => {
       lucide.createIcons();
       applyConfig(defaultConfig);
+
+      const searchInput = document.getElementById('game-search-input');
+      if (searchInput) {
+        searchInput.addEventListener('focus', () => {
+          searchInput.style.borderColor = '#3b3f8f';
+        });
+
+        searchInput.addEventListener('blur', () => {
+          setTimeout(() => {
+            searchInput.style.borderColor = '#d1d5db';
+            hideSearchResults();
+          }, 150);
+        });
+
+        searchInput.addEventListener('input', () => {
+          clearTimeout(searchDebounce);
+          searchDebounce = setTimeout(handleGameSearchInput, 250);
+        });
+      }
+
+      const appIdInput = document.getElementById('appid-input');
+      if (appIdInput) {
+        appIdInput.addEventListener('focus', () => {
+          appIdInput.style.borderColor = '#3b3f8f';
+        });
+
+        appIdInput.addEventListener('blur', () => {
+          appIdInput.style.borderColor = '#d1d5db';
+        });
+      }
+
+      const clearBtn = document.querySelector('button[onclick="handleClear()"]');
+      if (clearBtn) {
+        clearBtn.addEventListener('mouseenter', () => {
+          clearBtn.style.background = '#f3f4f6';
+        });
+
+        clearBtn.addEventListener('mouseleave', () => {
+          clearBtn.style.background = 'transparent';
+        });
+      }
+
+      const bulkBtn = document.getElementById('bulk-download-btn');
+      if (bulkBtn) {
+        bulkBtn.addEventListener('mouseenter', () => {
+          bulkBtn.style.background = '#15803d';
+        });
+
+        bulkBtn.addEventListener('mouseleave', () => {
+          bulkBtn.style.background = '#16a34a';
+        });
+      }
     });
   </script>
 </body>
