@@ -1,7 +1,8 @@
 const JSZip = require('jszip');
 
-async function fetchGameName(appId) {
-  const url = `https://store.steampowered.com/api/appdetails?appids=${encodeURIComponent(appId)}&l=english`;
+async function fetchGameNamesBatch(appIds) {
+  const joined = appIds.join(',');
+  const url = `https://store.steampowered.com/api/appdetails?appids=${encodeURIComponent(joined)}&l=english`;
 
   const response = await fetch(url, {
     headers: {
@@ -15,13 +16,16 @@ async function fetchGameName(appId) {
   }
 
   const data = await response.json();
-  const appData = data?.[appId];
+  const result = {};
 
-  if (!appData || appData.success !== true || !appData.data?.name) {
-    return null;
+  for (const appId of appIds) {
+    const appData = data?.[appId];
+    if (appData && appData.success === true && appData.data?.name) {
+      result[appId] = appData.data.name;
+    }
   }
 
-  return appData.data.name;
+  return result;
 }
 
 function buildLuaContent(appId, gameName) {
@@ -54,12 +58,16 @@ module.exports = async function handler(req, res) {
       return;
     }
 
+    const uniqueIds = [...new Set(ids)];
+
+    const gameMap = await fetchGameNamesBatch(uniqueIds);
+
     const zip = new JSZip();
     const readmeLines = ['Steam Manifest Generator', '', 'Included games:'];
     let addedCount = 0;
 
-    for (const appId of ids) {
-      const gameName = await fetchGameName(appId);
+    for (const appId of uniqueIds) {
+      const gameName = gameMap[appId];
       if (!gameName) continue;
 
       zip.file(`${appId}.lua`, buildLuaContent(appId, gameName));
