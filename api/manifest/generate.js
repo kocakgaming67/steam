@@ -1,31 +1,65 @@
+const BASE_URL = 'https://kernelos.org';
+const API_URL = 'https://kernelos.org/games/download.php?gen=1&id=';
+const STEAM_API_URL = 'https://store.steampowered.com/api/appdetails?appids=';
+
 function buildBaseUrl(req) {
   const proto = req.headers['x-forwarded-proto'] || 'https';
   const host = req.headers.host;
   return `${proto}://${host}`;
 }
 
-async function fetchGameName(appId) {
-  const url = `https://store.steampowered.com/api/appdetails?appids=${encodeURIComponent(appId)}&l=english`;
+async function getGameName(appId) {
+  try {
+    const response = await fetch(`${STEAM_API_URL}${encodeURIComponent(appId)}`, {
+      headers: {
+        'Accept': 'application/json',
+        'User-Agent': 'kernelua-plugin/1.0.0'
+      }
+    });
 
-  const response = await fetch(url, {
-    headers: {
-      'Accept': 'application/json',
-      'User-Agent': 'SteamManifestGenerator/1.0'
+    if (!response.ok) {
+      return `AppID ${appId}`;
     }
-  });
+
+    const data = await response.json();
+    return data?.[String(appId)]?.data?.name || `AppID ${appId}`;
+  } catch {
+    return `AppID ${appId}`;
+  }
+}
+
+async function fetchManifestMeta(appId) {
+  const headers = {
+    'User-Agent': 'kernelua-plugin/1.0.0',
+    'Accept': 'application/json'
+  };
+
+  const response = await fetch(`${API_URL}${encodeURIComponent(appId)}`, { headers });
 
   if (!response.ok) {
-    throw new Error(`Steam request failed with status ${response.status}`);
+    return { ok: false, error: 'API Error' };
   }
 
-  const data = await response.json();
-  const appData = data?.[appId];
-
-  if (!appData || appData.success !== true || !appData.data?.name) {
-    return null;
+  let data;
+  try {
+    data = await response.json();
+  } catch {
+    return { ok: false, error: 'Invalid API response' };
   }
 
-  return appData.data.name;
+  let downloadUrl = data?.url;
+  if (!downloadUrl) {
+    return { ok: false, error: 'No URL' };
+  }
+
+  if (downloadUrl.startsWith('/')) {
+    downloadUrl = BASE_URL + downloadUrl;
+  }
+
+  return {
+    ok: true,
+    downloadUrl
+  };
 }
 
 module.exports = async function handler(req, res) {
@@ -56,33 +90,27 @@ module.exports = async function handler(req, res) {
 
     const results = await Promise.all(
       uniqueIds.map(async (appId) => {
-        try {
-          const gameName = await fetchGameName(appId);
+        const [gameName, manifestMeta] = await Promise.all([
+          getGameName(appId),
+          fetchManifestMeta(appId)
+        ]);
 
-          if (!gameName) {
-            return {
-              appId,
-              success: false,
-              gameName: '',
-              error: 'App ID not found or unavailable on Steam'
-            };
-          }
-
-          return {
-            appId,
-            success: true,
-            gameName,
-            filename: `manifest_${appId}.vdf`,
-            downloadUrl: `${baseUrl}/api/manifest/download/${encodeURIComponent(appId)}`
-          };
-        } catch (error) {
+        if (!manifestMeta.ok) {
           return {
             appId,
             success: false,
-            gameName: '',
-            error: error.message || 'Failed to fetch Steam app details'
+            gameName,
+            error: manifestMeta.error
           };
         }
+
+        return {
+          appId,
+          success: true,
+          gameName,
+          filename: `${appId}.zip`,
+          downloadUrl: `${baseUrl}/api/manifest/download/${encodeURIComponent(appId)}`
+        };
       })
     );
 
